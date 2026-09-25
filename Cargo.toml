@@ -1,0 +1,18 @@
+[package]
+name = "piper-voice-prep"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Standalone voice dataset preparation for Piper"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+hound = "3.5"
+nnnoiseless = { version = "0.5.2", default-features = false }
+ratatui = "0.29"
+rodio = { version = "0.20", default-features = false, features = ["wav"] }
+rubato = "0.16.2"
+symphonia = { version = "0.5.5", features = ["all"] }
+walkdir = "2"
