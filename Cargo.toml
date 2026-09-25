@@ -18,6 +18,8 @@ rubato = "0.16.2"
 symphonia = { version = "0.5.5", features = ["all"] }
 walkdir = "2"
 whisper-rs = "0.16"
+unicode-segmentation = "1"
+unicode-width = "0.2"
 
 [profile.release]
 lto = "fat"

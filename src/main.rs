@@ -18,6 +18,7 @@ use walkdir::WalkDir;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
+mod text_input;
 mod tui;
 
 const RATE: u32 = 22_050;
@@ -50,7 +51,7 @@ enum Action {
     Transcribe {
         #[arg(default_value = ".")]
         root: PathBuf,
-        #[arg(long, default_value = "tr")]
+        #[arg(long, default_value = "en")]
         language: String,
     },
     /// Rebuild Piper metadata after editing transcripts.tsv.

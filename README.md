@@ -14,13 +14,13 @@ Uygulama, bir komut verilmediğinde menüyü açar. `voices` klasörüne konan �
 .\piper-voice-prep-windows.exe
 ```
 
-Menü: **Sesleri temizle ve böl → Otomatik metin üret → Kontrol → Piper metadata oluştur**. Whisper'ın çok dilli `base-q5_1` modeli çalıştırılabilir dosyanın içindedir; Python, `whisper-cli`, ayrı model dosyası veya internet bağlantısı gerekmez. Kontrol ekranında her klip sırayla otomatik çalınır. Ok tuşlarıyla gezilir; `Boşluk` tekrar çalar, `A` metinle eşleşiyorsa onaylar, `R` reddeder, `E` metni düzenler, `N` sıradaki bekleyen klibe gider. Düzenleme `Enter` ile kaydedilir, ardından `A` ile onaylanır. Her karar hemen `reviews.tsv` dosyasına yazılır.
+Menü: **Sesleri temizle ve böl → Otomatik metin üret → Kontrol → Piper metadata oluştur → Dil**. Varsayılan dil İngilizcedir; ana menüdeki **Language** satırına `Enter` basarak İngilizce ve Türkçe arasında geçebilirsiniz. Bu seçim hem arayüzü hem Whisper'ın tanıma dilini değiştirir. Whisper'ın çok dilli `base-q5_1` modeli çalıştırılabilir dosyanın içindedir; Python, `whisper-cli`, ayrı model dosyası veya internet bağlantısı gerekmez. Kontrol ekranında her klip sırayla otomatik çalınır. Ok tuşlarıyla gezilir; `Boşluk` tekrar çalar, `A` metinle eşleşiyorsa onaylar, `R` reddeder, `E` metni düzenler, `N` sıradaki bekleyen klibe gider. Düzenleme alanında imleçle gezme, `Home`/`End`, `Delete`, `Backspace`, `Shift` ile seçim, `Ctrl+A` ile tümünü seçme ve yapıştırma desteklenir. `Enter` kaydeder, `Esc` iptal eder; ardından `A` ile onaylanır. Her karar hemen `reviews.tsv` dosyasına yazılır.
 
 Komut satırı otomasyonu da kullanılabilir. Linux:
 
 ```bash
 ./piper-voice-prep-linux prepare /path/to/voices
-./piper-voice-prep-linux transcribe /path/to/voices --language tr
+./piper-voice-prep-linux transcribe /path/to/voices --language en
 ./piper-voice-prep-linux finalize /path/to/voices
 ```
 
@@ -28,7 +28,7 @@ Windows PowerShell:
 
 ```powershell
 .\piper-voice-prep-windows.exe prepare C:\path\to\voices
-.\piper-voice-prep-windows.exe transcribe C:\path\to\voices --language tr
+.\piper-voice-prep-windows.exe transcribe C:\path\to\voices --language en
 .\piper-voice-prep-windows.exe finalize C:\path\to\voices
 ```
 

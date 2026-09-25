@@ -999,6 +999,8 @@ dependencies = [
  "rodio",
  "rubato",
  "symphonia",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
  "walkdir",
  "whisper-rs",
 ]

@@ -1,14 +1,19 @@
 use super::*;
+use crate::text_input::TextInput;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
@@ -18,24 +23,24 @@ struct ScreenGuard;
 impl ScreenGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        execute!(stdout(), EnterAlternateScreen)?;
+        execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
         Ok(Self)
     }
     fn pause(&self) -> Result<()> {
         disable_raw_mode()?;
-        execute!(stdout(), LeaveAlternateScreen)?;
+        execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
         Ok(())
     }
     fn resume(&self) -> Result<()> {
         enable_raw_mode()?;
-        execute!(stdout(), EnterAlternateScreen)?;
+        execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
         Ok(())
     }
 }
 impl Drop for ScreenGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen);
     }
 }
 
@@ -76,9 +81,37 @@ enum Mode {
     Edit,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Language {
+    English,
+    Turkish,
+}
+
+impl Language {
+    fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Turkish => "tr",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Turkish => "Türkçe",
+        }
+    }
+    fn toggle(&mut self) {
+        *self = match self {
+            Self::English => Self::Turkish,
+            Self::Turkish => Self::English,
+        }
+    }
+}
+
 struct App {
     root: PathBuf,
     mode: Mode,
+    language: Language,
     menu_index: usize,
     speaker_index: usize,
     clip_index: usize,
@@ -86,7 +119,7 @@ struct App {
     clips: Vec<String>,
     transcripts: BTreeMap<String, String>,
     reviews: BTreeMap<String, String>,
-    input: String,
+    input: TextInput,
     message: String,
     player: Option<Player>,
 }
@@ -96,6 +129,7 @@ impl App {
         Self {
             root,
             mode: Mode::Menu,
+            language: Language::English,
             menu_index: 0,
             speaker_index: 0,
             clip_index: 0,
@@ -103,7 +137,7 @@ impl App {
             clips: Vec::new(),
             transcripts: BTreeMap::new(),
             reviews: BTreeMap::new(),
-            input: String::new(),
+            input: TextInput::default(),
             message: String::new(),
             player: None,
         }
@@ -129,7 +163,7 @@ impl App {
         self.clip_index = 0;
         self.speaker = Some(speaker);
         self.mode = Mode::Review;
-        self.message = "Boşluk: dinle | A: onayla | R: reddet | E: düzenle".into();
+        self.message = String::new();
         self.play_current();
         Ok(())
     }
@@ -177,16 +211,23 @@ impl App {
             match Player::new() {
                 Ok(p) => self.player = Some(p),
                 Err(e) => {
-                    self.message = format!("Ses aygıtı açılamadı: {e}");
+                    self.message = format!(
+                        "{}: {e}",
+                        self.tr("Audio device unavailable", "Ses aygıtı açılamadı")
+                    );
                     return;
                 }
             }
         }
         match self.player.as_mut().unwrap().play(&path) {
             Ok(()) => {
-                self.message = format!("Çalıyor: {}", path.file_name().unwrap().to_string_lossy())
+                self.message = format!(
+                    "{}: {}",
+                    self.tr("Playing", "Çalıyor"),
+                    path.file_name().unwrap().to_string_lossy()
+                )
             }
-            Err(e) => self.message = format!("Çalınamadı: {e}"),
+            Err(e) => self.message = format!("{}: {e}", self.tr("Playback failed", "Çalınamadı")),
         }
     }
     fn set_status(&mut self, status: &str) {
@@ -200,7 +241,12 @@ impl App {
                 .map(|s| clean_text(s).is_empty())
                 .unwrap_or(true)
         {
-            self.message = "Metin boş. Önce E ile düzenle.".into();
+            self.message = self
+                .tr(
+                    "Transcript is empty. Press E to edit.",
+                    "Metin boş. Düzenlemek için E'ye bas.",
+                )
+                .into();
             return;
         }
         self.reviews.insert(name, status.into());
@@ -209,7 +255,14 @@ impl App {
                 self.advance();
                 self.play_current();
             }
-            Err(e) => self.message = format!("Kayıt hatası: {e:#}"),
+            Err(e) => self.message = format!("{}: {e:#}", self.tr("Save failed", "Kayıt hatası")),
+        }
+    }
+    fn tr(&self, en: &'static str, tr: &'static str) -> &'static str {
+        if self.language == Language::English {
+            en
+        } else {
+            tr
         }
     }
 }
@@ -221,8 +274,13 @@ pub fn run(root: PathBuf) -> Result<()> {
     let mut app = App::new(root);
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let key = match event::read()? {
+            Event::Key(key) => key,
+            Event::Paste(text) if app.mode == Mode::Edit => {
+                app.input.insert(&text);
+                continue;
+            }
+            _ => continue,
         };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -230,7 +288,8 @@ pub fn run(root: PathBuf) -> Result<()> {
         match app.mode {
             Mode::Menu => match key.code {
                 KeyCode::Up => app.menu_index = app.menu_index.saturating_sub(1),
-                KeyCode::Down => app.menu_index = (app.menu_index + 1).min(3),
+                KeyCode::Down => app.menu_index = (app.menu_index + 1).min(4),
+                KeyCode::Left | KeyCode::Right if app.menu_index == 4 => app.language.toggle(),
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Enter => match app.menu_index {
                     0 | 1 => {
@@ -241,10 +300,13 @@ pub fn run(root: PathBuf) -> Result<()> {
                                     eprintln!("{}: {e:#}", s.display());
                                 }
                             }
-                        } else if let Err(e) = transcribe_all(&app.root, "tr") {
+                        } else if let Err(e) = transcribe_all(&app.root, app.language.code()) {
                             eprintln!("ASR error: {e:#}");
                         }
-                        println!("Devam etmek için Enter...");
+                        println!(
+                            "{}",
+                            app.tr("Press Enter to continue...", "Devam etmek için Enter...")
+                        );
                         let mut line = String::new();
                         io::stdin().read_line(&mut line)?;
                         guard.resume()?;
@@ -261,7 +323,17 @@ pub fn run(root: PathBuf) -> Result<()> {
                                 finalize(&out)?;
                             }
                         }
-                        app.message = "Piper metadata dosyaları güncellendi.".into();
+                        app.message = app
+                            .tr(
+                                "Piper metadata updated.",
+                                "Piper metadata dosyaları güncellendi.",
+                            )
+                            .into();
+                    }
+                    4 => {
+                        app.language.toggle();
+                        app.message =
+                            format!("{}: {}", app.tr("Language", "Dil"), app.language.label());
                     }
                     _ => {}
                 },
@@ -278,7 +350,7 @@ pub fn run(root: PathBuf) -> Result<()> {
                     KeyCode::Enter => {
                         if let Some(s) = speakers.get(app.speaker_index) {
                             if let Err(e) = app.select_speaker(s.clone()) {
-                                app.message = format!("Hata: {e:#}");
+                                app.message = format!("{}: {e:#}", app.tr("Error", "Hata"));
                             }
                         }
                     }
@@ -300,7 +372,8 @@ pub fn run(root: PathBuf) -> Result<()> {
                 KeyCode::Char('r') | KeyCode::Char('R') => app.set_status("rejected"),
                 KeyCode::Char('e') | KeyCode::Char('E') => {
                     if let Some(name) = app.current() {
-                        app.input = app.transcripts.get(name).cloned().unwrap_or_default();
+                        app.input
+                            .set(app.transcripts.get(name).cloned().unwrap_or_default());
                         app.mode = Mode::Edit;
                     }
                 }
@@ -324,22 +397,26 @@ pub fn run(root: PathBuf) -> Result<()> {
             },
             Mode::Edit => match key.code {
                 KeyCode::Esc => app.mode = Mode::Review,
-                KeyCode::Enter => {
+                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(name) = app.current().map(str::to_owned) {
-                        app.transcripts.insert(name.clone(), clean_text(&app.input));
+                        app.transcripts
+                            .insert(name.clone(), clean_text(app.input.value()));
                         app.reviews.remove(&name);
                         match app.save() {
-                            Ok(()) => app.message = "Metin kaydedildi; onay için A.".into(),
-                            Err(e) => app.message = format!("Hata: {e:#}"),
+                            Ok(()) => {
+                                app.message = app
+                                    .tr(
+                                        "Transcript saved. Press A to approve.",
+                                        "Metin kaydedildi. Onaylamak için A'ya bas.",
+                                    )
+                                    .into()
+                            }
+                            Err(e) => app.message = format!("{}: {e:#}", app.tr("Error", "Hata")),
                         }
                     }
                     app.mode = Mode::Review;
                 }
-                KeyCode::Backspace => {
-                    app.input.pop();
-                }
-                KeyCode::Char(c) => app.input.push(c),
-                _ => {}
+                _ => app.input.handle(key),
             },
         }
     }
@@ -348,71 +425,118 @@ pub fn run(root: PathBuf) -> Result<()> {
 
 fn draw(frame: &mut ratatui::Frame, app: &App) {
     let area = frame.area();
+    if area.width < 48 || area.height < 12 {
+        frame.render_widget(
+            Paragraph::new(app.tr(
+                "Make the terminal at least 48×12.",
+                "Terminali en az 48×12 yapın.",
+            ))
+            .style(Style::default().fg(Color::Yellow)),
+            area,
+        );
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(4),
         ])
         .split(area);
     frame.render_widget(
-        Paragraph::new(format!("Piper Voice Prep  |  {}", app.root.display())).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Ses veri hazırlama"),
-        ),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " ◉ PIPER VOICE PREP ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}  ", app.root.display()),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(
+                format!("  {} ", app.language.label()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .block(panel("", true))
+        .alignment(Alignment::Left),
         chunks[0],
     );
     match app.mode {
         Mode::Menu => {
-            let entries = [
-                "Sesleri temizle ve böl",
-                "Otomatik metin üret (yerleşik Whisper)",
-                "Kontrol: dinle / düzenle / onayla",
-                "Piper metadata oluştur",
-            ];
+            let entries = if app.language == Language::English {
+                [
+                    "01  Clean and split audio",
+                    "02  Transcribe with embedded Whisper",
+                    "03  Review clips and transcripts",
+                    "04  Build Piper metadata",
+                    "05  Language: English  ⇄",
+                ]
+            } else {
+                [
+                    "01  Sesleri temizle ve böl",
+                    "02  Yerleşik Whisper ile metin üret",
+                    "03  Klipleri ve metinleri kontrol et",
+                    "04  Piper metadata oluştur",
+                    "05  Dil: Türkçe  ⇄",
+                ]
+            };
             let items = entries
                 .iter()
-                .map(|s| ListItem::new(*s))
+                .map(|s| {
+                    ListItem::new(Line::from(Span::styled(
+                        *s,
+                        Style::default().fg(Color::White),
+                    )))
+                })
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(app.menu_index));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().borders(Borders::ALL).title("İşlem seç"))
-                    .highlight_style(
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    .block(panel(app.tr(" Choose an action ", " İşlem seç "), true))
+                    .highlight_symbol(" ▶ ")
+                    .highlight_style(selected_style()),
                 chunks[1],
                 &mut state,
             );
         }
         Mode::Speakers => {
-            let items = app
-                .speakers()
+            let speakers = app.speakers();
+            let items = speakers
                 .iter()
-                .map(|p| ListItem::new(p.file_name().unwrap().to_string_lossy().to_string()))
+                .map(|p| {
+                    ListItem::new(format!("  ◉  {}", p.file_name().unwrap().to_string_lossy()))
+                })
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(app.speaker_index));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title("Konuşmacı seç"),
-                    )
-                    .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan)),
+                    .block(panel(app.tr(" Select a speaker ", " Konuşmacı seç "), true))
+                    .highlight_style(selected_style()),
                 chunks[1],
                 &mut state,
             );
+            if speakers.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(app.tr(
+                        "No prepared speakers. Run Clean and split audio first.",
+                        "Hazırlanmış konuşmacı yok. Önce sesleri temizleyip bölün.",
+                    ))
+                    .style(Style::default().fg(Color::Yellow)),
+                    inner(chunks[1]),
+                );
+            }
         }
         Mode::Review | Mode::Edit => {
             let body = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+                .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
                 .split(chunks[1]);
             let items = app
                 .clips
@@ -423,48 +547,160 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
                         .get(name)
                         .map(String::as_str)
                         .unwrap_or("pending");
-                    let mark = match status {
-                        "approved" => "✓",
-                        "rejected" => "×",
-                        _ => "·",
+                    let (mark, color) = match status {
+                        "approved" => ("✓", Color::Green),
+                        "rejected" => ("×", Color::Red),
+                        _ => ("○", Color::DarkGray),
                     };
-                    ListItem::new(format!("{mark} {name}"))
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {mark} "), Style::default().fg(color)),
+                        Span::raw(name.clone()),
+                    ]))
                 })
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(app.clip_index));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().borders(Borders::ALL).title("Klipler"))
-                    .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan)),
+                    .block(panel(
+                        app.tr(" Clips ", " Klipler "),
+                        app.mode == Mode::Review,
+                    ))
+                    .highlight_style(selected_style()),
                 body[0],
                 &mut state,
             );
-            let name = app.current().unwrap_or("");
-            let text = if app.mode == Mode::Edit {
-                &app.input
+            let right = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(3)])
+                .split(body[1]);
+            let approved = app.reviews.values().filter(|v| *v == "approved").count();
+            let rejected = app.reviews.values().filter(|v| *v == "rejected").count();
+            let progress = if app.clips.is_empty() {
+                0.0
             } else {
-                app.transcripts.get(name).map(String::as_str).unwrap_or("")
-            };
-            let title = if app.mode == Mode::Edit {
-                "Metni düzenle: Enter kaydet, Esc iptal"
-            } else {
-                "Metin: Boşluk çal, A onayla, R reddet, E düzenle, N bekleyen"
+                (approved + rejected) as f64 / app.clips.len() as f64
             };
             frame.render_widget(
-                Paragraph::new(text)
-                    .wrap(Wrap { trim: false })
-                    .block(Block::default().borders(Borders::ALL).title(title)),
-                body[1],
+                Gauge::default()
+                    .block(panel(
+                        &format!(
+                            " {} / {}  •  ✓ {}  × {} ",
+                            app.clip_index.saturating_add(1).min(app.clips.len()),
+                            app.clips.len(),
+                            approved,
+                            rejected
+                        ),
+                        false,
+                    ))
+                    .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                    .ratio(progress.min(1.0))
+                    .label(format!("{:.0}%", progress * 100.0)),
+                right[0],
             );
+            let name = app.current().unwrap_or("");
+            if app.mode == Mode::Edit {
+                let edit = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Min(3)])
+                    .split(right[1]);
+                let input_area = inner(edit[0]);
+                let (line, cursor_x) = app.input.view(input_area.width as usize);
+                frame.render_widget(
+                    Paragraph::new(line)
+                        .block(panel(app.tr(" Edit transcript ", " Metni düzenle "), true)),
+                    edit[0],
+                );
+                frame.render_widget(
+                    Paragraph::new(app.input.value())
+                        .style(Style::default().fg(Color::Gray))
+                        .wrap(Wrap { trim: false })
+                        .block(panel(app.tr(" Full text ", " Tam metin "), false)),
+                    edit[1],
+                );
+                frame.set_cursor_position((input_area.x + cursor_x, input_area.y));
+            } else {
+                let text = app.transcripts.get(name).map(String::as_str).unwrap_or("");
+                frame.render_widget(
+                    Paragraph::new(if text.is_empty() {
+                        app.tr("No transcript yet", "Henüz metin yok")
+                    } else {
+                        text
+                    })
+                    .style(Style::default().fg(if text.is_empty() {
+                        Color::DarkGray
+                    } else {
+                        Color::White
+                    }))
+                    .wrap(Wrap { trim: false })
+                    .block(panel(app.tr(" Transcript ", " Metin "), false)),
+                    right[1],
+                );
+            }
         }
     }
-    let hint = if app.message.is_empty() {
-        "Yön tuşları + Enter | Esc/Q geri"
-    } else {
-        &app.message
+    let hint = match app.mode {
+        Mode::Menu => app.tr(
+            "↑↓ Navigate  •  Enter Select  •  ←→ Language  •  Q Quit",
+            "↑↓ Gezin  •  Enter Seç  •  ←→ Dil  •  Q Çık",
+        ),
+        Mode::Speakers => app.tr(
+            "↑↓ Select speaker  •  Enter Review  •  Esc Back",
+            "↑↓ Konuşmacı seç  •  Enter Kontrol  •  Esc Geri",
+        ),
+        Mode::Review => app.tr(
+            "←→ Clip  •  Space Play  •  A Approve  •  R Reject  •  E Edit  •  N Next pending",
+            "←→ Klip  •  Boşluk Dinle  •  A Onayla  •  R Reddet  •  E Düzenle  •  N Bekleyen",
+        ),
+        Mode::Edit => app.tr(
+            "←→ Move  •  Shift Select  •  Ctrl+A All  •  Home/End  •  Enter Save  •  Esc Cancel",
+            "←→ İmleç  •  Shift Seç  •  Ctrl+A Tümü  •  Home/End  •  Enter Kaydet  •  Esc İptal",
+        ),
     };
     frame.render_widget(
-        Paragraph::new(hint).block(Block::default().borders(Borders::ALL).title("Durum")),
+        Paragraph::new(vec![
+            Line::from(Span::styled(hint, Style::default().fg(Color::Cyan))),
+            Line::from(Span::styled(
+                if app.message.is_empty() {
+                    ""
+                } else {
+                    &app.message
+                },
+                Style::default().fg(Color::Yellow),
+            )),
+        ])
+        .block(panel(app.tr(" Help / Status ", " Yardım / Durum "), false)),
         chunks[2],
     );
+}
+
+fn panel(title: &str, focused: bool) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        }))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(if focused { Color::Cyan } else { Color::Gray })
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn selected_style() -> Style {
+    Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn inner(area: Rect) -> Rect {
+    Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
 }
