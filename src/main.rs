@@ -391,16 +391,36 @@ fn transcribe_all(root: &Path, language: &str) -> Result<()> {
     let mut pending = Vec::new();
     for speaker in speakers {
         let output = speaker.join("output");
+        let wav_dir = output.join("wav");
+        if !wav_dir.is_dir() {
+            continue;
+        }
         let rows = read_transcripts(&output.join("transcripts.tsv"))?;
-        if rows
-            .iter()
-            .any(|(name, text)| text.trim().is_empty() && output.join("wav").join(name).is_file())
-        {
-            pending.push((output, rows));
+        let reviews = read_reviews(&output.join("reviews.tsv"))?;
+        let mut names = Vec::new();
+        for entry in fs::read_dir(&wav_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file()
+                || !entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.eq_ignore_ascii_case("wav"))
+            {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if reviews.get(&name).map(String::as_str) != Some("approved") {
+                names.push((name.clone(), rows.get(&name).cloned()));
+            }
+        }
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        if !names.is_empty() {
+            pending.push((output, names));
         }
     }
     if pending.is_empty() {
-        eprintln!("No empty transcripts found.");
+        eprintln!("No unapproved or new WAV clips found.");
         return Ok(());
     }
     eprintln!("Loading embedded Whisper model...");
@@ -409,27 +429,37 @@ fn transcribe_all(root: &Path, language: &str) -> Result<()> {
         WhisperContextParameters::default(),
     )?;
     let mut state = context.create_state()?;
-    for (output, rows) in pending {
-        let names: Vec<String> = rows
-            .iter()
-            .filter(|(name, text)| {
-                text.trim().is_empty() && output.join("wav").join(name).is_file()
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        for (i, name) in names.iter().enumerate() {
+    for (output, names) in pending {
+        for (i, (name, original_text)) in names.iter().enumerate() {
+            let still_pending = with_output_lock(&output, || {
+                let reviews = read_reviews(&output.join("reviews.tsv"))?;
+                let latest = read_transcripts(&output.join("transcripts.tsv"))?;
+                Ok(reviews.get(name).map(String::as_str) != Some("approved")
+                    && latest.get(name) == original_text.as_ref())
+            })?;
+            if !still_pending {
+                eprintln!("{}: skipped; already approved or edited.", name);
+                continue;
+            }
             eprintln!("{}: {}/{} {}", output.display(), i + 1, names.len(), name);
             match transcribe_wav(&mut state, &output.join("wav").join(name), language) {
                 Ok(text) => {
+                    if text.trim().is_empty() {
+                        eprintln!("  ASR returned empty text; keeping existing transcript.");
+                        continue;
+                    }
                     with_output_lock(&output, || {
                         let mut latest = read_transcripts(&output.join("transcripts.tsv"))?;
-                        if latest
-                            .get(name)
-                            .map(|s| s.trim().is_empty())
-                            .unwrap_or(true)
+                        let mut reviews = read_reviews(&output.join("reviews.tsv"))?;
+                        if reviews.get(name).map(String::as_str) != Some("approved")
+                            && latest.get(name) == original_text.as_ref()
                         {
                             latest.insert(name.clone(), text);
+                            reviews.remove(name);
                             write_transcripts(&output.join("transcripts.tsv"), &latest)?;
+                            write_reviews(&output.join("reviews.tsv"), &reviews)?;
+                        } else {
+                            eprintln!("  Transcript changed during ASR; keeping latest value.");
                         }
                         finalize(&output)
                     })?;
@@ -491,7 +521,7 @@ fn read_transcripts(path: &Path) -> Result<BTreeMap<String, String>> {
 fn write_transcripts(path: &Path, rows: &BTreeMap<String, String>) -> Result<()> {
     let mut file = File::create(path)?;
     for (name, text) in rows {
-        writeln!(file, "{name}\t{}", clean_text(text))?;
+        writeln!(file, "{name}\t{text}")?;
     }
     Ok(())
 }

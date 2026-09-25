@@ -47,7 +47,7 @@ erdem/output/
 
 Piper'ın güncel `piper1-gpl` eğitimi için `--data.csv_path erdem/output/metadata.csv`, `--data.audio_dir erdem/output/wav`, `--model.sample_rate 22050` kullanın. Eski `rhasspy/piper` veri hazırlama akışı için `erdem/output` giriş dizini, `metadata_legacy.csv` dosyasını da `metadata.csv` adına kopyalayıp kullanın. İki formatın adlandırma farkı bu yüzden ayrı dosyalarda tutulur.
 
-Metinsiz WAV parçaları **eğitime hazır değildir**. Yerleşik Whisper boş metinleri doldurur; zaten düzenlenmiş metinlere dokunmaz. Otomatik metinler hatalı olabilir, bu nedenle kontrol ekranında her birini dinleyip onaylayın. Reddedilen klipler eğitim metadata'sına girmez.
+Metinsiz WAV parçaları **eğitime hazır değildir**. Yerleşik Whisper her çalıştırmada yalnızca onaylanmamış veya yeni eklenen WAV kliplerini işler. Onaylı metinler korunur; onaysız mevcut metinler yeniden üretilebilir ve eski ret kararı yeni metnin tekrar kontrol edilmesi için temizlenir. Whisper boş sonuç verirse mevcut metin korunur. Otomatik metinler hatalı olabilir, bu nedenle kontrol ekranında her birini dinleyip onaylayın. Reddedilen klipler eğitim metadata'sına girmez.
 
 ## İşleme
 
