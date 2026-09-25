@@ -14,12 +14,13 @@ Uygulama, bir komut verilmediğinde menüyü açar. `voices` klasörüne konan �
 .\piper-voice-prep-windows.exe
 ```
 
-Menü: Hazırla, Hazırla + Whisper, Kontrol, Piper metadata oluştur. Kontrol ekranında her klip sırayla otomatik çalınır. Ok tuşlarıyla gezilir; `Boşluk` tekrar çalar, `A` metinle eşleşiyorsa onaylar, `R` reddeder, `E` metni düzenler, `N` sıradaki bekleyen klibe gider. Düzenleme `Enter` ile kaydedilir, ardından `A` ile onaylanır. Her karar hemen `reviews.tsv` dosyasına yazılır.
+Menü: **Sesleri temizle ve böl → Otomatik metin üret → Kontrol → Piper metadata oluştur**. Whisper'ın çok dilli `base-q5_1` modeli çalıştırılabilir dosyanın içindedir; Python, `whisper-cli`, ayrı model dosyası veya internet bağlantısı gerekmez. Kontrol ekranında her klip sırayla otomatik çalınır. Ok tuşlarıyla gezilir; `Boşluk` tekrar çalar, `A` metinle eşleşiyorsa onaylar, `R` reddeder, `E` metni düzenler, `N` sıradaki bekleyen klibe gider. Düzenleme `Enter` ile kaydedilir, ardından `A` ile onaylanır. Her karar hemen `reviews.tsv` dosyasına yazılır.
 
 Komut satırı otomasyonu da kullanılabilir. Linux:
 
 ```bash
 ./piper-voice-prep-linux prepare /path/to/voices
+./piper-voice-prep-linux transcribe /path/to/voices --language tr
 ./piper-voice-prep-linux finalize /path/to/voices
 ```
 
@@ -27,6 +28,7 @@ Windows PowerShell:
 
 ```powershell
 .\piper-voice-prep-windows.exe prepare C:\path\to\voices
+.\piper-voice-prep-windows.exe transcribe C:\path\to\voices --language tr
 .\piper-voice-prep-windows.exe finalize C:\path\to\voices
 ```
 
@@ -41,17 +43,11 @@ erdem/output/
   metadata_legacy.csv
 ```
 
-`transcripts.tsv` dosyasında her WAV için bir satır bulunur: `dosya.wav<TAB>metin`. `reviews.tsv` kararları tutar. Metinleri dinleyip düzeltin, TUI'de onaylayın. Ardından metadata menüsünü veya `finalize` komutunu çalıştırın. Sadece **onaylı**, metni dolu ve WAV dosyası mevcut satırlar `metadata.csv` içine eklenir. `prepare` tekrar çalıştırıldığında mevcut metinler ve kararlar korunur. Kayıtlar farklı kişilerin sesini içeriyorsa klipleri elle ayıklayın; klasör adı dışında otomatik konuşmacı tanıma yapılmaz.
+`transcripts.tsv` dosyasında her WAV için bir satır bulunur: `dosya.wav<TAB>metin`. `reviews.tsv` kararları tutar. Metinleri dinleyip düzeltin, TUI'de onaylayın. Ardından metadata menüsünü veya `finalize` komutunu çalıştırın. Sadece **onaylı**, metni dolu ve WAV dosyası mevcut satırlar `metadata.csv` içine eklenir. `prepare` tekrar çalıştırıldığında mevcut metinler ve kararlar korunur; kaynak kayıtları değiştirdiyseniz ilgili klipleri yeniden kontrol edin. Kayıtlar farklı kişilerin sesini içeriyorsa klipleri elle ayıklayın; klasör adı dışında otomatik konuşmacı tanıma yapılmaz.
 
 Piper'ın güncel `piper1-gpl` eğitimi için `--data.csv_path erdem/output/metadata.csv`, `--data.audio_dir erdem/output/wav`, `--model.sample_rate 22050` kullanın. Eski `rhasspy/piper` veri hazırlama akışı için `erdem/output` giriş dizini, `metadata_legacy.csv` dosyasını da `metadata.csv` adına kopyalayıp kullanın. İki formatın adlandırma farkı bu yüzden ayrı dosyalarda tutulur.
 
-Metinsiz WAV parçaları **eğitime hazır değildir**. İsteğe bağlı olarak [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli` ve yerel model dosyası ile taslak transkripsiyon üretebilirsiniz:
-
-```bash
-./piper-voice-prep-linux prepare /path/to/voices --whisper-model /path/to/ggml-medium.bin --whisper-bin /path/to/whisper-cli --language tr
-```
-
-Whisper metinlerini eğitimden önce gözden geçirin. Model ve `whisper-cli` dosyası bu projenin parçası değildir. Parametre verilmezse uygulama tamamen çevrimdışı ve ek program gerektirmeden çalışır.
+Metinsiz WAV parçaları **eğitime hazır değildir**. Yerleşik Whisper boş metinleri doldurur; zaten düzenlenmiş metinlere dokunmaz. Otomatik metinler hatalı olabilir, bu nedenle kontrol ekranında her birini dinleyip onaylayın. Reddedilen klipler eğitim metadata'sına girmez.
 
 ## İşleme
 
@@ -63,4 +59,4 @@ Symphonia ile çözümleme, 48 kHz üzerinde RNNoise gürültü azaltma, FFT tab
 cargo build --release
 ```
 
-Windows için `x86_64-pc-windows-gnu` hedefi ve uygun linker gerekir. Kaynak kod MIT lisanslıdır; bağımlılıkların lisansları Cargo paketlerinde yer alır.
+Derlemede CMake ve C/C++ derleyicisi gerekir; Windows için `x86_64-pc-windows-gnu` hedefi ve MinGW-w64 araç zinciri kullanılır. `assets/ggml-base-q5_1.bin` kaynak projede saklanır ve derleme sırasında çalıştırılabilir dosyaya gömülür. Windows MinGW statik kütüphane adlandırması için `whisper-rs-sys` bağımlılığının küçük bir düzeltmesi `vendor/` altında bulunur. Kaynak kod MIT lisanslıdır; üçüncü taraf bilgileri `THIRD_PARTY.md` ve çalıştırılabilir dosyanın `licenses` komutundadır.

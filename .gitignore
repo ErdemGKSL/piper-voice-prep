@@ -1,2 +1,30 @@
 /target/
 *.log
+
+# Local settings and editor files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Voice recordings and generated Piper datasets
+**/output/
+*.wav
+*.m4a
+*.mp3
+*.flac
+*.ogg
+*.opus
+*.aac
+*.aiff
+*.aif
+
+# Cargo registry markers copied with the patched dependency
+vendor/**/.cargo-ok
+vendor/**/.cargo-checksum.json
+vendor/**/.cargo_vcs_info.json
+vendor/**/Cargo.lock
