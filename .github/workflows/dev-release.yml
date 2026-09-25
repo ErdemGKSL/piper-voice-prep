@@ -1,0 +1,96 @@
+name: Development release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-main-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset: piper-voice-prep-linux
+            binary: piper-voice-prep
+          - target: x86_64-pc-windows-gnu
+            asset: piper-voice-prep-windows.exe
+            binary: piper-voice-prep.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update
+          if [ "$TARGET" = "x86_64-pc-windows-gnu" ]; then
+            sudo apt-get install -y --no-install-recommends cmake libclang-dev g++-mingw-w64-x86-64-posix upx
+          else
+            sudo apt-get install -y --no-install-recommends cmake libclang-dev libasound2-dev upx
+          fi
+          rustup target add "$TARGET"
+
+      - name: Build release binary
+        env:
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Compress executable
+        run: |
+          mkdir -p dist
+          upx --lzma -o "dist/${{ matrix.asset }}" "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Update dev-main
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x86_64-*
+          path: dist
+          merge-multiple: true
+
+      - name: Move tag and update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            echo "A newer main commit exists; this run will not replace its release."
+            exit 0
+          fi
+
+          git push origin "+${GITHUB_SHA}:refs/tags/dev-main"
+          notes="Development build from main commit ${GITHUB_SHA}. Updated after each push."
+          if gh release view dev-main >/dev/null 2>&1; then
+            gh release edit dev-main --title dev-main --notes "$notes" --prerelease
+            gh release upload dev-main dist/piper-voice-prep-linux dist/piper-voice-prep-windows.exe --clobber
+          else
+            gh release create dev-main dist/piper-voice-prep-linux dist/piper-voice-prep-windows.exe \
+              --title dev-main --notes "$notes" --prerelease --latest=false --verify-tag
+          fi

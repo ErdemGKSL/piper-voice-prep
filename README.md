@@ -60,3 +60,7 @@ cargo build --release
 ```
 
 Derlemede CMake ve C/C++ derleyicisi gerekir; Windows için `x86_64-pc-windows-gnu` hedefi ve MinGW-w64 araç zinciri kullanılır. `assets/ggml-base-q5_1.bin` kaynak projede saklanır ve derleme sırasında çalıştırılabilir dosyaya gömülür. Windows MinGW statik kütüphane adlandırması için `whisper-rs-sys` bağımlılığının küçük bir düzeltmesi `vendor/` altında bulunur. Kaynak kod MIT lisanslıdır; üçüncü taraf bilgileri `THIRD_PARTY.md` ve çalıştırılabilir dosyanın `licenses` komutundadır.
+
+## Geliştirme sürümü
+
+`main` dalına her push, GitHub Actions üzerinde Linux ve Windows için release binary'lerini derler ve UPX ile sıkıştırır. İki derleme de başarılı olunca `dev-main` etiketi son commit'e taşınır; aynı adlı ön sürümün iki indirilebilir dosyası yenilenir. GitHub deposunda Actions'ın çalışmasına ve `GITHUB_TOKEN` için `contents: write` iznine izin verilmelidir. Etiket veya release değişmez olarak korunuyorsa hareketli `dev-main` etiketi kullanılamaz.
