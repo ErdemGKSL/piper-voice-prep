@@ -39,11 +39,12 @@ erdem/output/
   wav/src001_clip00001.wav
   transcripts.tsv
   reviews.tsv
+  sources.tsv
   metadata.csv
   metadata_legacy.csv
 ```
 
-`transcripts.tsv` dosyasında her WAV için bir satır bulunur: `dosya.wav<TAB>metin`. `reviews.tsv` kararları tutar. Metinleri dinleyip düzeltin, TUI'de onaylayın. Ardından metadata menüsünü veya `finalize` komutunu çalıştırın. Sadece **onaylı**, metni dolu ve WAV dosyası mevcut satırlar `metadata.csv` içine eklenir. `prepare` tekrar çalıştırıldığında mevcut metinler ve kararlar korunur; kaynak kayıtları değiştirdiyseniz ilgili klipleri yeniden kontrol edin. Kayıtlar farklı kişilerin sesini içeriyorsa klipleri elle ayıklayın; klasör adı dışında otomatik konuşmacı tanıma yapılmaz.
+`transcripts.tsv` dosyasında her WAV için bir satır bulunur: `dosya.wav<TAB>metin`. `reviews.tsv` kararları tutar. `sources.tsv` işlenmiş kaynak kayıtlarını ve sabit kaynak numaralarını tutar. Metinleri dinleyip düzeltin, TUI'de onaylayın. Ardından metadata menüsünü veya `finalize` komutunu çalıştırın. Sadece **onaylı**, metni dolu ve WAV dosyası mevcut satırlar `metadata.csv` içine eklenir. `prepare` tekrar çalıştırıldığında işlenmiş kaynaklar atlanır; yalnızca yeni ses dosyalarından, önceki numaraları kullanmadan yeni klipler eklenir. Eski WAV dosyaları, metinler ve kararlar korunur. Önceki sürümden kalan veri ilk çalıştırmada `sources.tsv` içine alınır; eski kaynaklar dosya zamanı ve adıyla eşleştirilir. Kaynak dosyayı değiştirmeniz veya yeniden adlandırmanız eski klipleri değiştirmez; yeni yol ayrı kaynak olarak işlenebilir. Kayıtlar farklı kişilerin sesini içeriyorsa klipleri elle ayıklayın; klasör adı dışında otomatik konuşmacı tanıma yapılmaz.
 
 Piper'ın güncel `piper1-gpl` eğitimi için `--data.csv_path erdem/output/metadata.csv`, `--data.audio_dir erdem/output/wav`, `--model.sample_rate 22050` kullanın. Eski `rhasspy/piper` veri hazırlama akışı için `erdem/output` giriş dizini, `metadata_legacy.csv` dosyasını da `metadata.csv` adına kopyalayıp kullanın. İki formatın adlandırma farkı bu yüzden ayrı dosyalarda tutulur.
 

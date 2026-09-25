@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use fs2::FileExt;
 use nnnoiseless::{DenoiseState, FRAME_SIZE};
 use rubato::{FftFixedInOut, Resampler};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -162,13 +162,50 @@ fn prepare_speaker(speaker: &Path, min_sec: f32, max_sec: f32) -> Result<()> {
     let output = speaker.join("output");
     let wav_dir = output.join("wav");
     fs::create_dir_all(&wav_dir)?;
-    let mut transcripts = read_transcripts(&output.join("transcripts.tsv"))?;
+    // Only one preparation run may allocate source IDs at a time.
+    let prepare_lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(output.join(".prepare.lock"))?;
+    prepare_lock.lock_exclusive()?;
+    let manifest_path = output.join("sources.tsv");
+    let mut sources = if manifest_path.exists() {
+        read_source_manifest(&manifest_path)?
+    } else {
+        let migrated = migrate_legacy_sources(speaker, &output, &files)?;
+        if !migrated.is_empty() {
+            write_source_manifest(&manifest_path, &migrated)?;
+        }
+        migrated
+    };
+    let mut next_id =
+        max_source_id(&output)?.max(sources.values().map(|s| s.id).max().unwrap_or(0)) + 1;
     let mut generated = 0usize;
-    for (file_index, file) in files.iter().enumerate() {
+    for file in &files {
+        let key = source_key(speaker, file)?;
+        let source = if let Some(source) = sources.get(&key) {
+            if source.done {
+                eprintln!("{}: already prepared; skipping", file.display());
+                continue;
+            }
+            *source
+        } else {
+            let source = SourceRecord {
+                id: next_id,
+                done: false,
+            };
+            next_id += 1;
+            sources.insert(key.clone(), source);
+            // Reserve the ID before writing clips, so an interrupted run can resume safely.
+            write_source_manifest(&manifest_path, &sources)?;
+            source
+        };
         eprintln!(
-            "{}: {}",
+            "{}: {} (source {})",
             speaker.file_name().unwrap().to_string_lossy(),
-            file.display()
+            file.display(),
+            source.id
         );
         let (input, input_rate) = match decode(file) {
             Ok(v) => v,
@@ -184,27 +221,168 @@ fn prepare_speaker(speaker: &Path, min_sec: f32, max_sec: f32) -> Result<()> {
         let audio = resample(&clean, 48_000, RATE)?;
         drop(clean);
         let spans = segment(&audio, min_sec, max_sec);
-        let mut written = 0;
+        let mut clip_names = Vec::new();
+        let mut written = 0usize;
         for (clip_index, (start, end)) in spans.into_iter().enumerate() {
-            let name = format!("src{:03}_clip{:05}.wav", file_index + 1, clip_index + 1);
+            let name = format!("src{:03}_clip{:05}.wav", source.id, clip_index + 1);
             let destination = wav_dir.join(&name);
-            write_wav(&destination, &audio[start..end])?;
-            transcripts.entry(name).or_default();
-            written += 1;
+            if !destination.exists() {
+                let temporary = wav_dir.join(format!(".{name}.partial"));
+                write_wav(&temporary, &audio[start..end])?;
+                if destination.exists() {
+                    fs::remove_file(&temporary)?;
+                } else {
+                    fs::rename(&temporary, &destination)?;
+                    written += 1;
+                }
+            }
+            clip_names.push(name);
         }
-        eprintln!("  {written} clips");
+        with_output_lock(&output, || {
+            let mut latest = read_transcripts(&output.join("transcripts.tsv"))?;
+            let mut changed = false;
+            for name in clip_names {
+                if let std::collections::btree_map::Entry::Vacant(entry) = latest.entry(name) {
+                    entry.insert(String::new());
+                    changed = true;
+                }
+            }
+            if changed {
+                write_transcripts(&output.join("transcripts.tsv"), &latest)?;
+                finalize(&output)?;
+            }
+            Ok(())
+        })?;
+        sources.get_mut(&key).unwrap().done = true;
+        write_source_manifest(&manifest_path, &sources)?;
+        eprintln!("  {written} new clips");
         generated += written;
     }
-    with_output_lock(&output, || {
-        let mut latest = read_transcripts(&output.join("transcripts.tsv"))?;
-        for (name, text) in transcripts {
-            latest.entry(name).or_insert(text);
-        }
-        write_transcripts(&output.join("transcripts.tsv"), &latest)?;
-        finalize(&output)
-    })?;
-    eprintln!("{}: {generated} clips prepared", speaker.display());
+    eprintln!("{}: {generated} new clips prepared", speaker.display());
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct SourceRecord {
+    id: usize,
+    done: bool,
+}
+
+fn source_key(speaker: &Path, file: &Path) -> Result<String> {
+    let relative = file.strip_prefix(speaker)?;
+    let path = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(path
+        .replace('%', "%25")
+        .replace('\t', "%09")
+        .replace('\n', "%0A")
+        .replace('\r', "%0D"))
+}
+
+fn read_source_manifest(path: &Path) -> Result<BTreeMap<String, SourceRecord>> {
+    let mut sources = BTreeMap::new();
+    let mut ids = BTreeSet::new();
+    for line in BufReader::new(File::open(path)?).lines() {
+        let line = line?;
+        let mut fields = line.splitn(3, '\t');
+        let id: usize = fields.next().context("missing source ID")?.parse()?;
+        let done = match fields.next().context("missing source state")? {
+            "done" => true,
+            "pending" => false,
+            state => bail!("invalid source state: {state}"),
+        };
+        let key = fields.next().context("missing source path")?.to_owned();
+        if id == 0 || !ids.insert(id) || sources.insert(key, SourceRecord { id, done }).is_some() {
+            bail!("invalid or duplicate source in {}", path.display());
+        }
+    }
+    Ok(sources)
+}
+
+fn write_source_manifest(path: &Path, sources: &BTreeMap<String, SourceRecord>) -> Result<()> {
+    write_atomic(path, |file| {
+        for (key, source) in sources {
+            writeln!(
+                file,
+                "{}\t{}\t{key}",
+                source.id,
+                if source.done { "done" } else { "pending" }
+            )?;
+        }
+        Ok(())
+    })
+}
+
+fn source_id_from_clip(name: &str) -> Option<usize> {
+    let (id, clip) = name.strip_prefix("src")?.split_once("_clip")?;
+    let clip = clip.strip_suffix(".wav")?;
+    if clip.is_empty() || !clip.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok()
+}
+
+fn max_source_id(output: &Path) -> Result<usize> {
+    let mut max_id = 0;
+    let wav_dir = output.join("wav");
+    if wav_dir.is_dir() {
+        for entry in fs::read_dir(wav_dir)? {
+            let entry = entry?;
+            if let Some(id) = source_id_from_clip(&entry.file_name().to_string_lossy()) {
+                max_id = max_id.max(id);
+            }
+        }
+    }
+    let transcripts = read_transcripts(&output.join("transcripts.tsv"))?;
+    let reviews = read_reviews(&output.join("reviews.tsv"))?;
+    for name in transcripts.keys().chain(reviews.keys()) {
+        if let Some(id) = source_id_from_clip(name) {
+            max_id = max_id.max(id);
+        }
+    }
+    Ok(max_id)
+}
+
+fn migrate_legacy_sources(
+    speaker: &Path,
+    output: &Path,
+    files: &[PathBuf],
+) -> Result<BTreeMap<String, SourceRecord>> {
+    let max_id = max_source_id(output)?;
+    let mut sources = BTreeMap::new();
+    if max_id == 0 {
+        return Ok(sources);
+    }
+    let mut old_files = files
+        .iter()
+        .filter_map(|file| {
+            let metadata = fs::metadata(file).ok()?;
+            let modified = metadata.modified().ok()?;
+            let added = metadata.created().unwrap_or(modified);
+            Some((added, modified, file))
+        })
+        .collect::<Vec<_>>();
+    old_files.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)));
+    old_files.truncate(max_id);
+    old_files.sort_by(|a, b| a.2.cmp(b.2));
+    for (index, (_, _, file)) in old_files.into_iter().enumerate() {
+        sources.insert(
+            source_key(speaker, file)?,
+            SourceRecord {
+                id: index + 1,
+                done: true,
+            },
+        );
+    }
+    eprintln!(
+        "{}: preserved {} existing source files in sources.tsv",
+        speaker.display(),
+        sources.len()
+    );
+    Ok(sources)
 }
 
 fn decode(path: &Path) -> Result<(Vec<f32>, u32)> {
@@ -519,10 +697,22 @@ fn read_transcripts(path: &Path) -> Result<BTreeMap<String, String>> {
 }
 
 fn write_transcripts(path: &Path, rows: &BTreeMap<String, String>) -> Result<()> {
-    let mut file = File::create(path)?;
-    for (name, text) in rows {
-        writeln!(file, "{name}\t{text}")?;
-    }
+    write_atomic(path, |file| {
+        for (name, text) in rows {
+            writeln!(file, "{name}\t{text}")?;
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic(path: &Path, write: impl FnOnce(&mut File) -> Result<()>) -> Result<()> {
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("data");
+    let temporary = path.with_extension(format!("{extension}.tmp"));
+    let mut file = File::create(&temporary)?;
+    write(&mut file)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, path)?;
     Ok(())
 }
 
@@ -563,11 +753,12 @@ fn read_reviews(path: &Path) -> Result<BTreeMap<String, String>> {
 }
 
 fn write_reviews(path: &Path, rows: &BTreeMap<String, String>) -> Result<()> {
-    let mut file = File::create(path)?;
-    for (name, status) in rows {
-        writeln!(file, "{name}\t{status}")?;
-    }
-    Ok(())
+    write_atomic(path, |file| {
+        for (name, status) in rows {
+            writeln!(file, "{name}\t{status}")?;
+        }
+        Ok(())
+    })
 }
 
 fn with_output_lock<T>(output: &Path, action: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -581,4 +772,69 @@ fn with_output_lock<T>(output: &Path, action: impl FnOnce() -> Result<T>) -> Res
     let result = action();
     drop(lock);
     result
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn legacy_outputs_keep_ids_when_new_file_sorts_between_old_files() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "piper-prep-legacy-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let speaker = root.join("speaker");
+        let wav_dir = speaker.join("output/wav");
+        fs::create_dir_all(&wav_dir)?;
+        let old_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let prepared_time = old_time + Duration::from_secs(60);
+        let new_time = prepared_time + Duration::from_secs(60);
+        File::create(speaker.join("a.wav"))?.set_modified(old_time)?;
+        File::create(speaker.join("z.wav"))?
+            .set_modified(prepared_time + Duration::from_secs(30))?;
+        for name in ["src001_clip00001.wav", "src002_clip00001.wav"] {
+            File::create(wav_dir.join(name))?.set_modified(prepared_time)?;
+        }
+        File::create(speaker.join("b.wav"))?.set_modified(new_time)?;
+
+        let sources =
+            migrate_legacy_sources(&speaker, &speaker.join("output"), &audio_files(&speaker))?;
+        assert_eq!(sources.get("a.wav").map(|s| s.id), Some(1));
+        assert_eq!(sources.get("z.wav").map(|s| s.id), Some(2));
+        assert!(!sources.contains_key("b.wav"));
+        assert!(sources.values().all(|s| s.done));
+        let manifest = speaker.join("output/sources.tsv");
+        write_source_manifest(&manifest, &sources)?;
+        assert_eq!(read_source_manifest(&manifest)?.len(), 2);
+        let protected_clip = wav_dir.join("src001_clip00001.wav");
+        fs::write(&protected_clip, b"keep this clip")?;
+        let transcript = speaker.join("output/transcripts.tsv");
+        let reviews = speaker.join("output/reviews.tsv");
+        fs::write(&transcript, "src001_clip00001.wav\tapproved text\n")?;
+        fs::write(&reviews, "src001_clip00001.wav\tapproved\n")?;
+        // The new source is deliberately invalid audio: it should reserve ID 3,
+        // while the two completed sources and all approved data stay untouched.
+        prepare_speaker(&speaker, 1.5, 12.0)?;
+        assert_eq!(fs::read(&protected_clip)?, b"keep this clip");
+        assert_eq!(
+            fs::read_to_string(&transcript)?,
+            "src001_clip00001.wav\tapproved text\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&reviews)?,
+            "src001_clip00001.wav\tapproved\n"
+        );
+        let sources = read_source_manifest(&manifest)?;
+        assert_eq!(
+            sources.get("b.wav").map(|s| (s.id, s.done)),
+            Some((3, false))
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }
